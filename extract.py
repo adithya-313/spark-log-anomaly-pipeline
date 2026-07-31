@@ -177,22 +177,39 @@ def verify(raw_df, parsed_df, joined_df):
               f"expected_size={row['expected_avg_response_size']}")
 
 
+def run_extract(spark, log_file, reference_db, output_path, row_limit=None):
+    """
+    Run the Extract stage with the given shared SparkSession.
+    Returns (joined_df, stats).
+
+    row_limit: if set, only the first N raw lines are processed -- used by
+    run_pipeline.py for quick sample runs without regenerating data.
+    """
+    raw_df = read_raw_log(spark, log_file)
+    if row_limit is not None:
+        raw_df = raw_df.limit(row_limit)
+
+    parsed_df = parse_log(raw_df)
+    reference_df = read_reference_table(spark, reference_db)
+    joined_df = broadcast_join(parsed_df, reference_df)
+
+    verify(raw_df, parsed_df, joined_df)
+    print("\n--- physical plan (shows the join strategy) ---")
+    joined_df.explain()
+
+    # Persist Extract's output so Transform can read it back from disk.
+    # Overwrite in place so reruns always reflect the current data.
+    joined_df.write.mode("overwrite").parquet(output_path)
+    print(f"\nWrote Extract output to {output_path}")
+
+    stats = {"rows_in": raw_df.count(), "rows_out": joined_df.count()}
+    return joined_df, stats
+
+
 def main():
     spark = build_spark()
     try:
-        raw_df = read_raw_log(spark, LOG_FILE)
-        parsed_df = parse_log(raw_df)
-        reference_df = read_reference_table(spark, REFERENCE_DB)
-        joined_df = broadcast_join(parsed_df, reference_df)
-
-        verify(raw_df, parsed_df, joined_df)
-        print("\n--- physical plan (shows the join strategy) ---")
-        joined_df.explain()
-
-        # Persist Extract's output so Phase 2 can read it back from disk.
-        # Overwrite in place so reruns always reflect the current data.
-        joined_df.write.mode("overwrite").parquet(EXTRACT_OUTPUT)
-        print(f"\nWrote Extract output to {EXTRACT_OUTPUT}")
+        run_extract(spark, LOG_FILE, REFERENCE_DB, EXTRACT_OUTPUT)
     finally:
         spark.stop()
 

@@ -147,14 +147,26 @@ def verify(spark, partitioned_df):
     print(list_tree(LOAD_OUTPUT))
 
 
+def run_load(spark, transform_output, output_path):
+    """
+    Run the Load stage with the given shared SparkSession.
+    Returns (reread_df, stats).
+    """
+    original = read_transform_output(spark, transform_output)
+    partitioned = derive_partition(original)
+    write_partitioned(partitioned, output_path)
+    verify(spark, partitioned)
+    print(f"\nWrote partitioned Load output to {output_path}")
+
+    reread = spark.read.parquet(output_path)
+    stats = {"rows_in": partitioned.count(), "rows_out": reread.count()}
+    return reread, stats
+
+
 def main():
     spark = build_spark()
     try:
-        original = read_transform_output(spark, TRANSFORM_OUTPUT)
-        partitioned = derive_partition(original)
-        write_partitioned(partitioned, LOAD_OUTPUT)
-        verify(spark, partitioned)
-        print(f"\nWrote partitioned Load output to {LOAD_OUTPUT}")
+        run_load(spark, TRANSFORM_OUTPUT, LOAD_OUTPUT)
     finally:
         spark.stop()
 

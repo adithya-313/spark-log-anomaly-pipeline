@@ -222,31 +222,42 @@ def verify(labeled_df, step_counts):
                   f"p95={r['p95_response_size']:7.1f}")
 
 
+def run_transform(spark, extract_output, ground_truth, output_path):
+    """
+    Run the Transform stage with the given shared SparkSession.
+    Returns (labeled_df, stats).
+    """
+    raw = read_extract_output(spark, extract_output)
+
+    step_counts = {}
+    step_counts["extracted_rows"] = raw.count()
+
+    cleaned, bad = drop_unparsed(raw)
+    step_counts["parse_ok_false"] = bad
+    step_counts["rows_after_parse_drop"] = cleaned.count()
+
+    typed = cast_types(cleaned)
+    typed, dups = dedupe(typed)
+    step_counts["duplicate_rows_found"] = dups
+    step_counts["rows_after_dedupe"] = typed.count()
+
+    window_features = compute_window_features(typed)
+    gt_df = read_ground_truth(spark, ground_truth)
+    labeled = attach_labels(window_features, gt_df)
+
+    verify(labeled, step_counts)
+
+    labeled.write.mode("overwrite").parquet(output_path)
+    print(f"\nWrote Transform output to {output_path}")
+
+    stats = {"rows_in": step_counts["extracted_rows"], "rows_out": labeled.count()}
+    return labeled, stats
+
+
 def main():
     spark = build_spark()
     try:
-        raw = read_extract_output(spark, EXTRACT_OUTPUT)
-
-        step_counts = {}
-        step_counts["extracted_rows"] = raw.count()
-
-        cleaned, bad = drop_unparsed(raw)
-        step_counts["parse_ok_false"] = bad
-        step_counts["rows_after_parse_drop"] = cleaned.count()
-
-        typed = cast_types(cleaned)
-        typed, dups = dedupe(typed)
-        step_counts["duplicate_rows_found"] = dups
-        step_counts["rows_after_dedupe"] = typed.count()
-
-        window_features = compute_window_features(typed)
-        ground_truth = read_ground_truth(spark, GROUND_TRUTH)
-        labeled = attach_labels(window_features, ground_truth)
-
-        verify(labeled, step_counts)
-
-        labeled.write.mode("overwrite").parquet(TRANSFORM_OUTPUT)
-        print(f"\nWrote Transform output to {TRANSFORM_OUTPUT}")
+        run_transform(spark, EXTRACT_OUTPUT, GROUND_TRUTH, TRANSFORM_OUTPUT)
     finally:
         spark.stop()
 
