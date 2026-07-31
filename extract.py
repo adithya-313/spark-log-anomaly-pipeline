@@ -17,7 +17,9 @@ owns the drop/flag decision.
 Usage:
     python extract.py
 
-Prints verification numbers and sample rows to stdout.
+Prints verification numbers and sample rows to stdout, then writes the
+joined DataFrame to extract_output.parquet so Phase 2 (transform.py) can
+read Extract's output from disk instead of recomputing it.
 """
 
 import os
@@ -30,6 +32,7 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "access.log")
 REFERENCE_DB = os.path.join(SCRIPT_DIR, "reference.db")
+EXTRACT_OUTPUT = os.path.join(SCRIPT_DIR, "extract_output.parquet")
 
 # The format the generator wrote (documented at the top of generate_logs.py):
 #     <timestamp> <endpoint> <status_code> <response_size>
@@ -185,6 +188,11 @@ def main():
         verify(raw_df, parsed_df, joined_df)
         print("\n--- physical plan (shows the join strategy) ---")
         joined_df.explain()
+
+        # Persist Extract's output so Phase 2 can read it back from disk.
+        # Overwrite in place so reruns always reflect the current data.
+        joined_df.write.mode("overwrite").parquet(EXTRACT_OUTPUT)
+        print(f"\nWrote Extract output to {EXTRACT_OUTPUT}")
     finally:
         spark.stop()
 
