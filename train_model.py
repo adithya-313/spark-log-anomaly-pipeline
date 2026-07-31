@@ -36,6 +36,12 @@ classifier, per the plan. No random forest or other model unless LR clearly
 fails in a way worth documenting. This stays batch/offline: no serving infra,
 real-time inference, or deep learning.
 
+Persistence: the fitted best pipeline (VectorAssembler + LogisticRegression)
+is saved to trained_model/ via MLlib's native write().save() format, so
+Phase 7 (predict_batch.py) can load it without re-training. Saved after CV,
+before the test-set evaluation below (the same model is both evaluated here
+and persisted for later use).
+
 Hyperparameters: ParamGridBuilder + CrossValidator on regParam and
 elasticNetParam only (2 parameters). With ~1612 train rows and ~65 positive
 examples, k-fold CV here is a light sensitivity check, not a robust model
@@ -75,6 +81,11 @@ FEATURE_COLUMNS = [
 LABEL_COLUMN = "is_anomalous"
 
 TRAIN_FRACTION = 0.8
+
+# Where the fitted pipeline is persisted so later phases can load it.
+# MLlib's native save format (a directory), NOT Python pickling -- the saved
+# artifact can be re-loaded by Spark.ML without this script or its code.
+MODEL_PATH = os.path.join(SCRIPT_DIR, "trained_model")
 
 # Cross-validation settings (small, honest grid -- see module docstring).
 CV_FOLDS = 3
@@ -268,6 +279,9 @@ def main():
             print(f"    regParam={pm[lr.regParam]:<6} "
                   f"elasticNetParam={pm[lr.elasticNetParam]:<5} avgAUC={metric:.4f}")
         print(f"  best params -> regParam={best_reg}, elasticNetParam={best_enet}")
+        print(f"\n  saving best fitted pipeline (assembler + LR) to {MODEL_PATH}")
+        cv_model.bestModel.write().overwrite().save(MODEL_PATH)
+        print("  saved (MLlib native format -- loadable via PipelineModel.load).")
         print("""
   Honesty note on CV at this size: the train set is only ~1612 rows with ~65
   anomalous windows. With 3 folds each training fold holds ~43 positives, so

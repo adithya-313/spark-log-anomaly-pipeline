@@ -35,6 +35,14 @@ pipeline can be evaluated later against known ground truth.
 
 Usage:
     python generate_logs.py [--rows 1500000] [--seed 42]
+    python generate_logs.py --rows 400000 --seed 12345 --days 2 \\
+        --start-datetime "2026-07-08 00:00:00" --prefix new_batch_
+
+    The extra options let this same generator create a NEW, later batch of
+    logs (fresh seed, different start date / number of days) into separate
+    files (new_batch_access.log, new_batch_ground_truth_windows.csv) WITHOUT
+    overwriting the original training data. Phase 7 predicts on such a batch
+    to test generalization on data the model has never seen.
 
 Output files are (re)created every run. Exit code 0 on success.
 """
@@ -371,21 +379,39 @@ def main():
                         help="total number of log lines to write")
     parser.add_argument("--seed", type=int, default=SEED,
                         help="random seed for reproducible output")
+    parser.add_argument("--days", type=int, default=NUM_DAYS,
+                        help="how many days of logs to generate")
+    parser.add_argument("--start-datetime", type=str, default=None,
+                        help='first timestamp, format "YYYY-MM-DD HH:MM:SS" '
+                             '(default: the module constant START_DATETIME)')
+    parser.add_argument("--prefix", type=str, default="",
+                        help="optional filename prefix, e.g. new_batch_ -- when "
+                             "set, logs/ground truth go to <prefix>access.log and "
+                             "<prefix>ground_truth_windows.csv instead of the "
+                             "default names, so an existing dataset is not "
+                             "overwritten")
     args = parser.parse_args()
 
+    if args.start_datetime:
+        start = datetime.strptime(args.start_datetime, "%Y-%m-%d %H:%M:%S")
+    else:
+        start = START_DATETIME
+
     out_dir = script_dir()
-    access_log_path = os.path.join(out_dir, "access.log")
-    ground_truth_path = os.path.join(out_dir, "ground_truth_windows.csv")
+    access_log_path = os.path.join(out_dir, f"{args.prefix}access.log")
+    ground_truth_path = os.path.join(out_dir, f"{args.prefix}ground_truth_windows.csv")
     reference_db_path = os.path.join(out_dir, "reference.db")
 
     rng = random.Random(args.seed)
 
-    windows = build_windows(START_DATETIME, NUM_DAYS, WINDOW_MINUTES)
+    windows = build_windows(start, args.days, WINDOW_MINUTES)
     anomalies = pick_anomalous_windows(windows, rng)
     endpoints = build_endpoints()
 
     # The three outputs are independent of each other; ground truth and the
     # reference table are small, the log is streamed out line by line.
+    # The reference table is static endpoint metadata (identical for any
+    # batch), so it is always written to the shared reference.db path.
     write_ground_truth(ground_truth_path, windows, anomalies)
     create_reference_db(reference_db_path, endpoints)
 
@@ -394,6 +420,8 @@ def main():
     )
 
     # Brief human-readable summary printed to stdout.
+    print(f"Generated batch from {start} over {args.days} day(s), "
+          f"seed={args.seed}")
     print(f"Wrote {lines_written} log lines to {access_log_path}")
     print(f"  malformed lines: {malformed_written} "
           f"({100 * malformed_written / lines_written:.2f}%)")

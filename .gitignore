@@ -14,3 +14,9 @@ extract_output.parquet/
 transform_output.parquet/
 windowed_features/
 *.parquet
+
+# Phase 7: new-batch logs generated after training, plus the saved model
+# (both reproducible by running the scripts -- see train_model.py / predict_batch.py).
+new_batch_access.log
+new_batch_ground_truth_windows.csv
+trained_model/
