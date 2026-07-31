@@ -1,0 +1,16 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# ---------------------------------------------------------------------------
+# Generated data -- reproducible by running the pipeline scripts, so it is
+# ignored going forward. Previously committed copies remain in git history
+# (untracked here via `git rm --cached`, never deleted, no history rewrite).
+# ---------------------------------------------------------------------------
+access.log
+ground_truth_windows.csv
+reference.db
+extract_output.parquet/
+transform_output.parquet/
+windowed_features/
+*.parquet
