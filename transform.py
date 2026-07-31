@@ -96,12 +96,19 @@ def cast_types(df):
 def dedupe(df):
     """
     Remove exact-duplicate rows.
-    Returns (clean_df, duplicate_count); the count is reported even if zero.
+    Returns (clean_df, duplicate_count, deduped_count); the counts are reported
+    even if zero.
+
+    The dropDuplicates shuffle is computed ONCE and its row count is reused for
+    the duplicate count below, instead of also running a separate
+    distinct().count() (the same dedupe operation) and a separate recount
+    upstream. This removes one full dedupe shuffle over the ~1.48M rows.
     """
     full_count = df.count()
-    distinct_count = df.distinct().count()
-    duplicate_count = full_count - distinct_count
-    return df.dropDuplicates(), duplicate_count
+    deduped = df.dropDuplicates()
+    deduped_count = deduped.count()
+    duplicate_count = full_count - deduped_count
+    return deduped, duplicate_count, deduped_count
 
 
 def compute_window_features(clean_df):
@@ -237,11 +244,20 @@ def run_transform(spark, extract_output, ground_truth, output_path):
     step_counts["rows_after_parse_drop"] = cleaned.count()
 
     typed = cast_types(cleaned)
-    typed, dups = dedupe(typed)
+    typed, dups, deduped_count = dedupe(typed)
     step_counts["duplicate_rows_found"] = dups
-    step_counts["rows_after_dedupe"] = typed.count()
+    step_counts["rows_after_dedupe"] = deduped_count
 
     window_features = compute_window_features(typed)
+    # verify() runs ~15 Spark actions over the labeled frame (counts, filters,
+    # agg, collect, sample windows) plus the final count/write. Without caching,
+    # every one of those re-executes the window aggregation AND the dedupe
+    # shuffle over the ~1.48M rows. The window result is only 2016 rows, so
+    # caching it is cheap (fits comfortably in memory, unlike the 1.48M-row
+    # deduped frame which measured slower when cached) and makes all downstream
+    # actions read from memory.
+    window_features = window_features.cache()
+    window_features.count()  # materialize the small cache now, before verify()
     gt_df = read_ground_truth(spark, ground_truth)
     labeled = attach_labels(window_features, gt_df)
 

@@ -26,30 +26,64 @@ ENV NOTE (required to run Spark on this laptop):
 """
 
 import argparse
+import io
+import json
 import time
+import urllib.request
 
 import extract
 import load
 import transform
 
 
-def build_spark():
+def build_spark(shuffle_partitions=None):
     """
     Create the ONE SparkSession shared by all three stages.
     UTC is required by Transform's 5-minute window bucketing, so the shared
     session carries that config (Extract and Load do not care).
+
+    shuffle_partitions: optional override of spark.sql.shuffle.partitions
+    (the number of reduce-side partitions after any shuffle). Default 200 is
+    sized for cluster shuffles; on a single laptop producing only 2016 window
+    rows it is far more reduce tasks than needed, so this knob lets us prove
+    a smaller value (e.g. 8) speeds things up without changing results.
     """
     from pyspark.sql import SparkSession
-    spark = (
+    builder = (
         SparkSession.builder
         .appName("spark-log-anomaly-pipeline")
         .master("local[*]")
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.sql.session.timeZone", "UTC")
-        .getOrCreate()
     )
+    if shuffle_partitions is not None:
+        builder = builder.config("spark.sql.shuffle.partitions", shuffle_partitions)
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     return spark
+
+
+def print_stage_metrics(spark):
+    """
+    Headless substitute for the Spark UI's DAG/SQL stage view: query the
+    running app's own REST API (localhost:<uiPort>/api/v1/applications/...) for
+    every completed stage and print, per stage: name, number of tasks, and the
+    shuffle bytes read/written. This is the same data the UI's Stages tab
+    shows, fetched programmatically because there is no browser in this env.
+    """
+    app_id = spark.sparkContext.applicationId
+    ui_url = spark.sparkContext.uiWebUrl  # e.g. http://127.0.0.1:4040
+    url = f"{ui_url}/api/v1/applications/{app_id}/stages"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        stages = json.load(resp)
+
+    print("\n--- per-stage execution metrics (from Spark UI REST API) ---")
+    for s in sorted(stages, key=lambda x: x["stageId"]):
+        shuffle_in = s.get("shuffleReadBytes", 0) or 0
+        shuffle_out = s.get("shuffleWriteBytes", 0) or 0
+        print(f"  stage {s['stageId']:<3} tasks={s['numTasks']:<4} "
+              f"shuffle read={shuffle_in:>12,} B  shuffle write={shuffle_out:>12,} B  "
+              f"{s['name'][:80]}")
 
 
 def run_stage(name, fn, **kwargs):
@@ -75,14 +109,27 @@ def main():
         "--sample-rows", type=int, default=None,
         help="Only process the first N rows of access.log (default: all rows)",
     )
+    parser.add_argument(
+        "--shuffle-partitions", type=int, default=None,
+        help="Override spark.sql.shuffle.partitions (default: Spark's 200)",
+    )
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="After the run, print per-stage shuffle metrics from the Spark UI "
+             "REST API (headless substitute for the UI's stage view)",
+    )
     args = parser.parse_args()
 
     if args.sample_rows:
         print(f"RUN MODE: SAMPLE -- first {args.sample_rows} rows of access.log\n")
     else:
         print("RUN MODE: FULL -- entire access.log\n")
+    if args.shuffle_partitions is not None:
+        print(f"CONFIG: spark.sql.shuffle.partitions = {args.shuffle_partitions}\n")
+    else:
+        print("CONFIG: spark.sql.shuffle.partitions = 200 (Spark default)\n")
 
-    spark = build_spark()
+    spark = build_spark(shuffle_partitions=args.shuffle_partitions)
     try:
         # Stages run strictly in order; each writes its output parquet so the
         # next stage reads it back from disk (same contract as standalone runs).
@@ -103,6 +150,9 @@ def main():
                   spark=spark,
                   transform_output=load.TRANSFORM_OUTPUT,
                   output_path=load.LOAD_OUTPUT)
+
+        if args.profile:
+            print_stage_metrics(spark)
 
         print("\nPipeline complete.")
     finally:
